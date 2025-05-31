@@ -94,3 +94,50 @@
     }))
   )
 )
+
+;; Request a new loan with specified amount, collateral, and duration
+;; Returns the new loan ID if successful
+(define-public (request-loan
+    (amount uint)
+    (collateral uint)
+    (duration uint)
+  )
+  (let (
+      (sender tx-sender)
+      (loan-id (+ (var-get next-loan-id) u1))
+      (user-score (unwrap! (map-get? UserScores { user: sender }) ERR-UNAUTHORIZED))
+      (active-loans (default-to { active-loans: (list) } (map-get? UserLoans { user: sender })))
+    )
+    ;; Validate request
+    (asserts! (>= (get score user-score) MIN-LOAN-SCORE) ERR-INSUFFICIENT-SCORE)
+    (asserts! (<= (len (get active-loans active-loans)) u5) ERR-ACTIVE-LOAN)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (and (> duration u0) (<= duration u52560)) ERR-INVALID-DURATION)
+    ;; Max ~1 year assuming 10-min blocks
+    ;; Calculate required collateral based on credit score
+    (let ((required-collateral (calculate-required-collateral amount (get score user-score))))
+      (asserts! (>= collateral required-collateral) ERR-INSUFFICIENT-BALANCE)
+      ;; Transfer collateral
+      (try! (stx-transfer? collateral sender (as-contract tx-sender)))
+      ;; Create loan
+      (map-set Loans { loan-id: loan-id } {
+        borrower: sender,
+        amount: amount,
+        collateral: collateral,
+        due-height: (+ stacks-block-height duration),
+        interest-rate: (calculate-interest-rate (get score user-score)),
+        is-active: true,
+        is-defaulted: false,
+        repaid-amount: u0,
+      })
+      ;; Update user loans
+      (try! (update-user-loans sender loan-id))
+      ;; Transfer loan amount
+      (as-contract (try! (stx-transfer? amount tx-sender sender)))
+      ;; Update counters
+      (var-set next-loan-id loan-id)
+      (var-set total-stx-locked (+ (var-get total-stx-locked) collateral))
+      (ok loan-id)
+    )
+  )
+)
